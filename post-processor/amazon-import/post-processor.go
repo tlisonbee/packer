@@ -186,16 +186,7 @@ func (p *PostProcessor) PostProcess(ui packer.Ui, artifact packer.Artifact) (pac
 
 	// Wait for import process to complete, this takes a while
 	ui.Message(fmt.Sprintf("Waiting for task %s to complete (may take a while)", *import_start.ImportTaskId))
-
-	stateChange := awscommon.StateChangeConf{
-		Pending: []string{"pending", "active"},
-		Refresh: awscommon.ImportImageRefreshFunc(ec2conn, *import_start.ImportTaskId),
-		Target:  "completed",
-	}
-
-	// Actually do the wait for state change
-	// We ignore errors out of this and check job state in AWS API
-	awscommon.WaitForState(&stateChange)
+	err = awscommon.WaitUntilImageImported(ec2conn, *import_start.ImportTaskId)
 
 	// Retrieve what the outcome was for the import task
 	import_result, err := ec2conn.DescribeImportImageTasks(&ec2.DescribeImportImageTasksInput{

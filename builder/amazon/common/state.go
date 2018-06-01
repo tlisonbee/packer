@@ -1,17 +1,12 @@
 package common
 
 import (
-	"errors"
-	"fmt"
 	"log"
-	"net"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/hashicorp/packer/helper/multistep"
@@ -37,34 +32,21 @@ type StateChangeConf struct {
 	Target    string
 }
 
-// Provide context and timeout/retry configuration to AWS SDK's waiter.
-func WaitUntilAMIAvailable(conn *ec2.EC2, imageId string) error {
-	// use env vars to read in the wait delay and the max amount of time to wait
-	delay := SleepSeconds()
-	timeoutSeconds := TimeoutSeconds()
-	// AWS sdk uses max attempts instead of a timeout; convert timeout into
-	// max attempts
-	maxAttempts := timeoutSeconds / delay
+// Following are wrapper functions that use Packer's environment-variables to
+// determing retry logic, then call the AWS SDK's built-in waiters.
 
+func WaitUntilAMIAvailable(conn *ec2.EC2, imageId string) error {
 	imageInput := ec2.DescribeImagesInput{
 		ImageIds: []*string{&imageId},
 	}
 
 	err := conn.WaitUntilImageAvailableWithContext(aws.BackgroundContext(),
 		&imageInput,
-		request.WithWaiterDelay(request.ConstantWaiterDelay(time.Duration(delay)*time.Second)),
-		request.WithWaiterMaxAttempts(maxAttempts))
+		getWaiterOptions()...)
 	return err
 }
 
-// Provide context and timeout/retry configuration to AWS SDK's waiter
 func WaitUntilInstanceTerminated(conn *ec2.EC2, instanceId string) error {
-	// use env vars to read in the wait delay and the max amount of time to wait
-	delay := SleepSeconds()
-	timeoutSeconds := TimeoutSeconds()
-	// AWS sdk uses max attempts instead of a timeout; convert timeout into
-	// max attempts
-	maxAttempts := timeoutSeconds / delay
 
 	instanceInput := ec2.DescribeInstancesInput{
 		InstanceIds: []*string{&instanceId},
@@ -72,159 +54,198 @@ func WaitUntilInstanceTerminated(conn *ec2.EC2, instanceId string) error {
 
 	err := conn.WaitUntilInstanceTerminatedWithContext(aws.BackgroundContext(),
 		&instanceInput,
-		request.WithWaiterDelay(request.ConstantWaiterDelay(time.Duration(delay)*time.Second)),
-		request.WithWaiterMaxAttempts(maxAttempts))
+		getWaiterOptions()...)
 	return err
 }
 
-// Provide context and timeout/retry configuration to AWS SDK's waiter.
 // This function works for both requesting and cancelling spot instances.
 func WaitUntilSpotRequestFulfilled(conn *ec2.EC2, spotRequestId string) error {
-	// use env vars to read in the wait delay and the max amount of time to wait
-	delay := SleepSeconds()
-	timeoutSeconds := TimeoutSeconds()
-	// AWS sdk uses max attempts instead of a timeout; convert timeout into
-	// max attempts
-	maxAttempts := timeoutSeconds / delay
-
 	spotRequestInput := ec2.DescribeSpotInstanceRequestsInput{
 		SpotInstanceRequestIds: []*string{&spotRequestId},
 	}
 
 	err := conn.WaitUntilSpotInstanceRequestFulfilledWithContext(aws.BackgroundContext(),
 		&spotRequestInput,
-		request.WithWaiterDelay(request.ConstantWaiterDelay(time.Duration(delay)*time.Second)),
-		request.WithWaiterMaxAttempts(maxAttempts))
+		getWaiterOptions()...)
 	return err
 }
 
 func WaitUntilVolumeAvailable(conn *ec2.EC2, volumeId string) error {
-	// use env vars to read in the wait delay and the max amount of time to wait
-	delay := SleepSeconds()
-	timeoutSeconds := TimeoutSeconds()
-	// AWS sdk uses max attempts instead of a timeout; convert timeout into
-	// max attempts
-	maxAttempts := timeoutSeconds / delay
-
 	volumeInput := ec2.DescribeVolumesInput{
 		VolumeIds: []*string{&volumeId},
 	}
 
 	err := conn.WaitUntilVolumeAvailableWithContext(aws.BackgroundContext(),
 		&volumeInput,
-		request.WithWaiterDelay(request.ConstantWaiterDelay(time.Duration(delay)*time.Second)),
-		request.WithWaiterMaxAttempts(maxAttempts))
+		getWaiterOptions()...)
 	return err
 }
 
 func WaitUntilSnapshotDone(conn *ec2.EC2, snapshotID string) error {
-	// use env vars to read in the wait delay and the max amount of time to wait
-	delay := SleepSeconds()
-	timeoutSeconds := TimeoutSeconds()
-	// AWS sdk uses max attempts instead of a timeout; convert timeout into
-	// max attempts
-	maxAttempts := timeoutSeconds / delay
-
 	snapInput := ec2.DescribeSnapshotsInput{
 		SnapshotIds: []*string{&snapshotID},
 	}
 
 	err := conn.WaitUntilSnapshotCompletedWithContext(aws.BackgroundContext(),
 		&snapInput,
-		request.WithWaiterDelay(request.ConstantWaiterDelay(time.Duration(delay)*time.Second)),
-		request.WithWaiterMaxAttempts(maxAttempts))
+		getWaiterOptions()...)
 	return err
 }
 
-func ImportImageRefreshFunc(conn *ec2.EC2, importTaskId string) StateRefreshFunc {
-	return func() (interface{}, string, error) {
-		resp, err := conn.DescribeImportImageTasks(&ec2.DescribeImportImageTasksInput{
-			ImportTaskIds: []*string{
-				&importTaskId,
+// Wrappers for our custom AWS waiters
+
+func WaitUntilVolumeAttached(conn *ec2.EC2, volumeId string) error {
+	volumeInput := ec2.DescribeVolumesInput{
+		VolumeIds: []*string{&volumeId},
+	}
+
+	err := WaitForVolumeToBeAttached(conn,
+		aws.BackgroundContext(),
+		&volumeInput,
+		getWaiterOptions()...)
+	return err
+}
+
+func WaitUntilVolumeDetached(conn *ec2.EC2, volumeId string) error {
+	volumeInput := ec2.DescribeVolumesInput{
+		VolumeIds: []*string{&volumeId},
+	}
+
+	err := WaitForVolumeToBeAttached(conn,
+		aws.BackgroundContext(),
+		&volumeInput,
+		getWaiterOptions()...)
+	return err
+}
+
+func WaitUntilImageImported(conn *ec2.EC2, taskID string) error {
+	importInput := ec2.DescribeImportImageTasksInput{
+		ImportTaskIds: []*string{&taskID},
+	}
+
+	err := WaitForImageToBeImported(conn,
+		aws.BackgroundContext(),
+		&importInput,
+		getWaiterOptions()...)
+	return err
+}
+
+// Custom waiters using AWS's request.Waiter
+
+func WaitForVolumeToBeAttached(c *ec2.EC2, ctx aws.Context, input *ec2.DescribeVolumesInput, opts ...request.WaiterOption) error {
+	w := request.Waiter{
+		Name:        "DescribeVolumes",
+		MaxAttempts: 40,
+		Delay:       request.ConstantWaiterDelay(5 * time.Second),
+		Acceptors: []request.WaiterAcceptor{
+			{
+				State:    request.SuccessWaiterState,
+				Matcher:  request.PathAllWaiterMatch,
+				Argument: "Volumes[].State",
+				Expected: "attached",
+			},
+			{
+				State:    request.FailureWaiterState,
+				Matcher:  request.PathAnyWaiterMatch,
+				Argument: "Volumes[].State",
+				Expected: "deleted",
 			},
 		},
-		)
-		if err != nil {
-			if ec2err, ok := err.(awserr.Error); ok && strings.HasPrefix(ec2err.Code(), "InvalidConversionTaskId") {
-				resp = nil
-			} else if isTransientNetworkError(err) {
-				resp = nil
-			} else {
-				log.Printf("Error on ImportImageRefresh: %s", err)
-				return nil, "", err
+		Logger: c.Config.Logger,
+		NewRequest: func(opts []request.Option) (*request.Request, error) {
+			var inCpy *ec2.DescribeVolumesInput
+			if input != nil {
+				tmp := *input
+				inCpy = &tmp
 			}
-		}
-
-		if resp == nil || len(resp.ImportImageTasks) == 0 {
-			return nil, "", nil
-		}
-
-		i := resp.ImportImageTasks[0]
-		return i, *i.Status, nil
+			req, _ := c.DescribeVolumesRequest(inCpy)
+			req.SetContext(ctx)
+			req.ApplyOptions(opts...)
+			return req, nil
+		},
 	}
+	return w.WaitWithContext(ctx)
 }
 
-// WaitForState watches an object and waits for it to achieve a certain
-// state.
-func WaitForState(conf *StateChangeConf) (i interface{}, err error) {
-	log.Printf("Waiting for state to become: %s", conf.Target)
-
-	sleepSeconds := SleepSeconds()
-	maxTicks := TimeoutSeconds()/sleepSeconds + 1
-	notfoundTick := 0
-
-	for {
-		var currentState string
-		i, currentState, err = conf.Refresh()
-		if err != nil {
-			return
-		}
-
-		if i == nil {
-			// If we didn't find the resource, check if we have been
-			// not finding it for awhile, and if so, report an error.
-			notfoundTick += 1
-			if notfoundTick > maxTicks {
-				return nil, errors.New("couldn't find resource")
+func WaitForVolumeToBeDetached(c *ec2.EC2, ctx aws.Context, input *ec2.DescribeVolumesInput, opts ...request.WaiterOption) error {
+	w := request.Waiter{
+		Name:        "DescribeVolumes",
+		MaxAttempts: 40,
+		Delay:       request.ConstantWaiterDelay(5 * time.Second),
+		Acceptors: []request.WaiterAcceptor{
+			{
+				State:    request.SuccessWaiterState,
+				Matcher:  request.PathAllWaiterMatch,
+				Argument: "Volumes[].State",
+				Expected: "detached",
+			},
+		},
+		Logger: c.Config.Logger,
+		NewRequest: func(opts []request.Option) (*request.Request, error) {
+			var inCpy *ec2.DescribeVolumesInput
+			if input != nil {
+				tmp := *input
+				inCpy = &tmp
 			}
-		} else {
-			// Reset the counter for when a resource isn't found
-			notfoundTick = 0
-
-			if currentState == conf.Target {
-				return
-			}
-
-			if conf.StepState != nil {
-				if _, ok := conf.StepState.GetOk(multistep.StateCancelled); ok {
-					return nil, errors.New("interrupted")
-				}
-			}
-
-			found := false
-			for _, allowed := range conf.Pending {
-				if currentState == allowed {
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				err := fmt.Errorf("unexpected state '%s', wanted target '%s'", currentState, conf.Target)
-				return nil, err
-			}
-		}
-
-		time.Sleep(time.Duration(sleepSeconds) * time.Second)
+			req, _ := c.DescribeVolumesRequest(inCpy)
+			req.SetContext(ctx)
+			req.ApplyOptions(opts...)
+			return req, nil
+		},
 	}
+	return w.WaitWithContext(ctx)
 }
 
-func isTransientNetworkError(err error) bool {
-	if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
-		return true
+func WaitForImageToBeImported(c *ec2.EC2, ctx aws.Context, input *ec2.DescribeImportImageTasksInput, opts ...request.WaiterOption) error {
+	w := request.Waiter{
+		Name:        "DescribeImages",
+		MaxAttempts: 40,
+		Delay:       request.ConstantWaiterDelay(5 * time.Second),
+		Acceptors: []request.WaiterAcceptor{
+			{
+				State:    request.SuccessWaiterState,
+				Matcher:  request.PathAllWaiterMatch,
+				Argument: "ImportImageTasks[].State",
+				Expected: "completed",
+			},
+			{
+				State:    request.RetryWaiterState,
+				Matcher:  request.ErrorWaiterMatch,
+				Expected: "InvalidConversionTaskId",
+			},
+		},
+		Logger: c.Config.Logger,
+		NewRequest: func(opts []request.Option) (*request.Request, error) {
+			var inCpy *ec2.DescribeImportImageTasksInput
+			if input != nil {
+				tmp := *input
+				inCpy = &tmp
+			}
+			req, _ := c.DescribeImportImageTasksRequest(inCpy)
+			req.SetContext(ctx)
+			req.ApplyOptions(opts...)
+			return req, nil
+		},
 	}
+	return w.WaitWithContext(ctx)
+}
 
-	return false
+// This helper function uses the environment variables AWS_TIMEOUT_SECONDS and
+// AWS_POLL_DELAY_SECONDS to generate waiter options that can be passed into any
+// request.Waiter function. These options will control how many times the waiter
+// will retry the request, as well as how long to wait between the retries.
+func getWaiterOptions() []request.WaiterOption {
+	// use env vars to read in the wait delay and the max amount of time to wait
+	delay := SleepSeconds()
+	timeoutSeconds := TimeoutSeconds()
+	// AWS sdk uses max attempts instead of a timeout; convert timeout into
+	// max attempts
+	maxAttempts := timeoutSeconds / delay
+	delaySeconds := request.ConstantWaiterDelay(time.Duration(delay) * time.Second)
+
+	return []request.WaiterOption{
+		request.WithWaiterDelay(delaySeconds),
+		request.WithWaiterMaxAttempts(maxAttempts)}
 }
 
 // Returns 300 seconds (5 minutes) by default
