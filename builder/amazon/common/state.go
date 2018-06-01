@@ -117,6 +117,25 @@ func WaitUntilVolumeAvailable(conn *ec2.EC2, volumeId string) error {
 	return err
 }
 
+func WaitUntilSnapshotDone(conn *ec2.EC2, snapshotID string) error {
+	// use env vars to read in the wait delay and the max amount of time to wait
+	delay := SleepSeconds()
+	timeoutSeconds := TimeoutSeconds()
+	// AWS sdk uses max attempts instead of a timeout; convert timeout into
+	// max attempts
+	maxAttempts := timeoutSeconds / delay
+
+	snapInput := ec2.DescribeSnapshotsInput{
+		SnapshotIds: []*string{&snapshotID},
+	}
+
+	err := conn.WaitUntilSnapshotCompletedWithContext(aws.BackgroundContext(),
+		&snapInput,
+		request.WithWaiterDelay(request.ConstantWaiterDelay(time.Duration(delay)*time.Second)),
+		request.WithWaiterMaxAttempts(maxAttempts))
+	return err
+}
+
 func ImportImageRefreshFunc(conn *ec2.EC2, importTaskId string) StateRefreshFunc {
 	return func() (interface{}, string, error) {
 		resp, err := conn.DescribeImportImageTasks(&ec2.DescribeImportImageTasksInput{
