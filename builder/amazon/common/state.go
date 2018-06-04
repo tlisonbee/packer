@@ -146,14 +146,8 @@ func WaitForVolumeToBeAttached(c *ec2.EC2, ctx aws.Context, input *ec2.DescribeV
 			{
 				State:    request.SuccessWaiterState,
 				Matcher:  request.PathAllWaiterMatch,
-				Argument: "Volumes[].State",
+				Argument: "Volumes[].Attachments[].State",
 				Expected: "attached",
-			},
-			{
-				State:    request.FailureWaiterState,
-				Matcher:  request.PathAnyWaiterMatch,
-				Argument: "Volumes[].State",
-				Expected: "deleted",
 			},
 		},
 		Logger: c.Config.Logger,
@@ -181,8 +175,8 @@ func WaitForVolumeToBeDetached(c *ec2.EC2, ctx aws.Context, input *ec2.DescribeV
 			{
 				State:    request.SuccessWaiterState,
 				Matcher:  request.PathAllWaiterMatch,
-				Argument: "Volumes[].State",
-				Expected: "detached",
+				Argument: "length(Volumes[].Attachments[]) == `0`",
+				Expected: true,
 			},
 		},
 		Logger: c.Config.Logger,
