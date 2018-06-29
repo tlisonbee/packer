@@ -130,7 +130,7 @@ func (c *Config) prepareSSH(ctx *interpolate.Context) []error {
 	}
 
 	if c.SSHTimeout == 0 {
-		c.SSHTimeout = 5 * time.Minute
+		c.SSHTimeout = 10 * time.Minute
 	}
 
 	if c.SSHKeepAliveInterval == 0 {

@@ -122,7 +122,7 @@ The SSH communicator has the following options:
 
 -   `ssh_timeout` (string) - The time to wait for SSH to become available.
     Packer uses this to determine when the machine has booted so this is
-    usually quite long. Example value: `10m`.
+    usually quite long. Defaults to `10m`.
 
 -   `ssh_username` (string) - The username to connect to SSH with. Required
     if using SSH.
